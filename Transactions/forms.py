@@ -1,5 +1,7 @@
 from django import forms
 from .models import Transaction
+from Accounts.models import UserBankAccount
+from django.db.models import Sum
 
 
 class TransactionForm(forms.ModelForm):
@@ -37,6 +39,13 @@ class WithdrawForm(TransactionForm):
         max_withdraw_amount = 20000
         account = self.account
         balance = self.account.balance
+
+        bank_balance = UserBankAccount.objects.aggregate(
+            Sum('balance'))['balance__sum']
+        if bank_balance is None or bank_balance < amount:
+            raise forms.ValidationError("This bank is bankrupt")
+
+
         if amount < min_withdraw_amount:
             raise forms.ValidationError(
                 f"Minimum withdraw amount is {min_withdraw_amount}"
@@ -51,8 +60,29 @@ class WithdrawForm(TransactionForm):
         return amount
 
 
+
 class LoanRequestForm(TransactionForm):
     def clean_amount(self):
         amount = self.cleaned_data.get("amount")
+
+        return amount
+
+
+class TransferMoneyForm(TransactionForm):
+    class Meta:
+        model = Transaction
+        fields = ['amount', 'transaction_type', 'to_account']
+
+    def clean_to_account(self):
+        to_account = self.cleaned_data.get('to_account')
+        if UserBankAccount.objects.filter(account_number=to_account).exists():
+            return to_account
+        raise forms.ValidationError("This account doesn't exist.")
+
+    def clean_amount(self):
+        account = self.account
+        amount = self.cleaned_data.get('amount')
+        if account.balance < amount:
+            raise forms.ValidationError("Insufficient balance")
 
         return amount

@@ -2,8 +2,8 @@ from django.shortcuts import render, redirect
 from django.views.generic import CreateView, ListView, DetailView
 from django.contrib.auth.mixins import LoginRequiredMixin
 from .models import Transaction
-from .forms import DepositeForm, WithdrawForm, LoanRequestForm
-from .constants import TRANSACTION_TYPE, DEPOSITE, WITHDRAWAL, LOAN, LOAN_PAID
+from .forms import DepositeForm, WithdrawForm, LoanRequestForm, TransferMoneyForm
+from .constants import TRANSACTION_TYPE, DEPOSITE, WITHDRAWAL, LOAN, LOAN_PAID, TRANSFER_MONEY, RECEIVE_MONEY
 from django.contrib import messages
 from django.http import HttpResponse
 from datetime import datetime
@@ -13,14 +13,20 @@ from django.shortcuts import get_object_or_404
 from django.urls import reverse_lazy
 from django.core.mail import EmailMessage, EmailMultiAlternatives
 from django.template.loader import render_to_string
+from Accounts.models import UserBankAccount
 # Create your views here.
 
 
-def send_transaction_mail(user, amount, subject, template):
-    message = render_to_string(template, {
+def send_transaction_mail(user, amount, subject, template, account_number=None):
+    context = {
         'user': user,
         'amount': amount,
-    })
+    }
+    
+    if account_number is not None:
+        context['account_number'] = account_number
+
+    message = render_to_string(template, context)
     send_email = EmailMultiAlternatives(subject, '', to=[user.email])
     send_email.attach_alternative(message, "text/html")
     send_email.send()
@@ -178,3 +184,49 @@ class LoanListView(LoginRequiredMixin, ListView):
         # return super().get_queryset().filter(
         #     account=self.request.user.account, transaction_type=3
         # )
+
+
+class TransferMoneyView(TransactionCreateMixin):
+    title = "Transfer Money"
+    form_class = TransferMoneyForm
+
+    def get_initial(self):
+        initial = {
+            'transaction_type': TRANSFER_MONEY,
+        }
+        return initial
+
+    def form_valid(self, form):
+        to_account = form.cleaned_data.get('to_account')
+        amount = form.cleaned_data.get('amount')
+
+        send_account = self.request.user.account
+        send_account.balance -= amount
+
+        receive_account = UserBankAccount.objects.get(
+            account_number=to_account)
+        receive_account.balance += amount
+
+        send_account.save(update_fields=['balance'])
+        receive_account.save(update_fields=['balance'])
+
+        Transaction.objects.create(
+            account=receive_account,
+            amount=amount,
+            balance_after_transaction=receive_account.balance,
+            transaction_type=RECEIVE_MONEY
+        )
+        send_transaction_mail(self.request.user, amount,
+                              'Send Money Successful', 'transactions/send_money_email.html', receive_account.account_number)
+        send_transaction_mail(receive_account.user, amount,
+                              'Received Money', 'transactions/received_money_email.html', send_account.account_number)
+
+        messages.success(
+            self.request, f'Successfully transferred {amount} from {send_account.account_number} to {to_account}'
+        )
+
+        return super().form_valid(form)
+
+    def form_invalid(self, form):
+        messages.error(self.request, "Something went wrong.")
+        return super().form_invalid(form)
